@@ -1,0 +1,185 @@
+#install packages:
+install.packages(c("dplyr","sp","rgdal","ggmap","ggplot2"))
+#The rest of the packages I manually installed
+#loading:
+library(dplyr)
+library(sp)
+library(rgdal)
+library(ggmap)
+library(ggplot2)
+library(maps)
+library(mapdata)
+library(mapproj)
+library(maptools)
+library(rworldmap)
+library(rgeos)
+
+#Reading in  shapefiles for PSO Territory and Population data:
+PSO_Territory<-readOGR(dsn="PSO_Territory_SHP",layer="PSO_Territory")
+POP_2010<- readOGR(dsn="2010_POP",layer="2010_Census_Data")
+
+#Reading in CSV data:
+Participating<- read.csv(file="2015_OK_PSO_Participating_stores.csv") #No data cleaning needed for participating data
+Info_USA<- read.csv(file="2015_infoUSA_for_OK.csv")
+TX_AR_Data<- read.csv(file="StoreData.csv")
+
+
+#Deleting stores in OK from Info USA data:
+Non_Participating<- Info_USA[!Info_USA$STATE=="OK",]
+#All stores in OK from InfoUSA data:
+Stores_OK<- Info_USA[Info_USA$STATE=="OK",]
+#Extracting only AR and TX from justine's 2014 data:
+Non_Participating_Two<-TX_AR_Data[TX_AR_Data$STATE %in% c("TX","AR"),]
+non_part_OK_arc<-write.csv(Non_Part_OK, file="Non_Part_OK.csv")
+
+#Deleting unnecesary columns and combining the non participating data outside of OK:
+c1<- colnames(Non_Participating_Two)
+final<- c1[colnames(Non_Participating_Two) %in% colnames(Non_Participating)]
+N_P<- Non_Participating_Two[,final]
+N_P_Final<- rbind(N_P,Non_Participating)
+
+
+## Takes an address (string) as input and returns a geocoded address using google map api
+getGeoDetails <- function(address){   
+  #use the geocode function to query google servers
+  geo_reply<- geocode(address, output='all', messaging=TRUE, override_limit=TRUE)
+  #now extract the bits that we need from the returned list
+  answer <- data.frame(lat=NA, long=NA, accuracy=NA, formatted_address=NA,
+                       address_type=NA, status=NA)
+  answer$status <- geo_reply$status
+  
+  #if we are over the query limit - want to pause for 10 minutes
+  while(geo_reply$status == "OVER_QUERY_LIMIT"){
+    print("OVER QUERY LIMIT - Pausing for 1 hour at:") 
+    time1 <- Sys.time()
+    print(as.character(time))
+    Sys.sleep(60*10)
+    geo_reply = geocode(address, output='all', messaging=TRUE, override_limit=TRUE)
+    answer$status <- geo_reply$status
+  }
+  
+  #return Na's if we didn't get a match:
+  if (geo_reply$status != "OK"){
+    return(answer)
+  }   
+  #else, extract what we need from the Google server reply into a dataframe:
+  answer$lat <- geo_reply$results[[1]]$geometry$location$lat
+  answer$long <- geo_reply$results[[1]]$geometry$location$lng   
+  if (length(geo_reply$results[[1]]$types) > 0){
+    answer$accuracy <- geo_reply$results[[1]]$types[[1]]
+  }
+  answer$address_type <- paste(geo_reply$results[[1]]$types, collapse=',')
+  answer$formatted_address <- geo_reply$results[[1]]$formatted_address
+  answer$time <- Sys.time()
+  
+  return(answer)
+}
+
+test.get.geo.deets <- lapply(X=addresses2[1:200], getGeoDetails)
+
+# Takes a data frame that contains store information including the following column names:
+# ADDRESS, CITY, STATE, ZIP and the index to start geocoding the data frame.
+# Adds the geocoded results to the input data frame
+geocodeDataframe <- function(df, start_index=1) {
+  addresses <- paste0(df$ADDRESS, " ", df$CITY, " ",
+                     df$STATE, " ", df$ZIP, " USA")
+  #initialise a dataframe to hold the results
+  geocoded <- data.frame()
+  
+  # Start the geocoding process - address by address. geocode() function takes care of query speed limit.
+  for (ii in seq(startindex, length(addresses))){
+    `  print(paste("Working on index", ii, "of", length(addresses)))
+    #query the google geocoder - this will pause here if we are over the limit.
+    result<- getGeoDetails(addresses[ii]) 
+    print(result$status)     
+    result$index <- ii
+    #append the answer to the results file.
+    geocoded <- rbind(geocoded, result)
+  }
+  cbind(df, geocoded)
+}
+
+
+geocodeDataframe(df_OK, 1)
+geocodeDataframe(df_non_OK, 1)
+
+
+#exporting all non-participating geopoints outside of OK to csv file:
+Non_Part_Outside_OK<-read.csv(file="geocoded1.csv")
+##Appending store type and store name to new geocoded data:
+Final_Non_Part$COMPANY.NAME<-N_P_Final$COMPANY.NAME
+write.csv(Final_Non_Part,file="Final_Non_Part.csv")
+
+# takes a data frame from read.csv and converts it into a shapefile with projection WGS84
+# it assumes longitude and latitude columns are called long and lat
+convertCSVtoSHP <- function(csv) {
+  coordinates(csv) =~long+lat
+  proj4string(csv) = CRS("+proj=longlat +datum=WGS84")
+  shp <- spTransform(Participiating_geo,CRS("+proj=longlat +datum=WGS84"))
+  shp
+}
+
+plot_map <- function(regions, territory_shp, population_shp) {
+  #map base
+  map <- map("state", regions=regions, lwd=1, xlim=c(-105, -93), ylim=c(33,38),
+             mar=c(0, 0, 0, 0), myborder=0)
+  
+  #population in territory shapefile
+  pop_in_territory_shp <- point.in.poly(population_shp, territory_shp)
+  
+  #add a layer on the base map
+  plot(pop_in_territory_shp, add=TRUE, col='red', cex=.01)
+  legend("bottomleft", legend=c("PSO"), col=c("red"), cex=0.8, pch=20,
+         title="Census Blocks", text.font=4)
+}
+
+
+
+participating_stores_shp
+all_stores_shp
+
+#Intersecting PSO territory and all stores in OK to find just non-part stores in OK:
+non_participating_stores_in_shp <- gDifference(all_stores_in_shp, territory_shp)
+
+map <- map("state",regions=regions, lwd=1, xlim=c(-105, -93), ylim=c(33,38),
+           mar = c(0, 0, 0, 0), myborder=0)
+plot(difference, add = TRUE, col = 'red',cex=.1, pch=20)
+plot(participating_stores_in_shp, add=TRUE, col='green', cex=.1, pch=20)
+plot(non_participating_stores_out_shp, add=TRUE, col='blue', cex=.1, pch=20)
+plot(territory_shp, add = TRUE)
+
+# Adding a legend to the map:
+legend("bottomleft", legend=c("Participating", "Non-Participating in state", "Non-Participating out of state"),
+       col=c("green","red","blue"), cex=0.8, pch=20,
+       title= "Participating and Non-Particpating Stores", text.font=4)
+
+
+
+##### Calculate driving time
+calculate_driving_time <- function(x, store) {
+  x_long <- x[1]
+  x_lat <- x[2]
+  store_long <- store$long
+  store_lat <- store$lat
+  tryCatch({
+    mapdist_result <- mapdist(from=c(x_long, x_lat), to=c(store_long, store_lat), mode=c("driving"), override_limit = TRUE)
+    time_minutes = mapdist_result$hours[1]*60 + mapdist_result$minutes[1]
+    time_minutes
+  })
+}
+
+calculate_driving_time(test.get.geo.deets[1], test.get.geo.deets)
+
+total_grid<- data.frame()
+df <- final_participating
+
+startindex <- 1
+# Start the driving time computation process
+for (ii in seq(startindex, dim(df)[1])){
+  print(paste("Working on index", ii, "of", length(df)))
+  
+  result = create_driving_time_grid(df[ii,]) 
+  result$index <- ii
+  #append the answer to the results file.
+  total_grid <- rbind(total_grid, result)
+}
